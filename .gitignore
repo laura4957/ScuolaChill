@@ -1,0 +1,19 @@
+# Segreti e configurazioni locali: non devono mai finire nella repository
+.env
+.env.*
+!.env.example
+
+# Dipendenze e build
+node_modules/
+dist/
+build/
+coverage/
+
+# Log
+*.log
+npm-debug.log*
+
+# Sistema operativo ed editor
+.DS_Store
+Thumbs.db
+.idea/
