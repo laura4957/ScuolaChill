@@ -8,9 +8,9 @@
 | ------------ | --------------------------------- |
 | **Prodotto** | ScuolaChill                       |
 | **Team**     | _nome del team_                   |
-| **Autori**   | _nome e cognome di ogni membro_   |
+| **Autori**   | Maria Laura Iacobucci             |
 | **Versione** | _1.0_                             |
-| **Data**     | _gg/mm/aaaa_                      |
+| **Data**     | 23/09/2026                        |
 | **Stato**    | _Bozza · In revisione · Validato_ |
 
 ### Storico delle versioni
