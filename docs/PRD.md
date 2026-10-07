@@ -17,7 +17,7 @@
 | -------- | ---------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 0.1      | 23/09/2026 | Maria Laura Iacobucci | Prima stesura della prima parte, per fissare perimetro e decisioni aperte prima del resto.                                                                                       |
 | 0.2      | 30/09/2026 | Maria Laura Iacobucci | Acceptance criteria aggiunti alle user story della traccia.                                                                                                                      |
-| 0.3      | 07/10/2026 | Maria Laura Iacobucci | Stesura completa di seconda e terza parte. Aggiunte le funzionalità di esperienza d'uso (pagina Oggi, griglia delle cattedre, importazione degli studenti) con le loro priorità. |
+| 0.3      | 07/10/2026 | Maria Laura Iacobucci | Seconda parte compilata fino alle scelte tecnologiche, come richiesto per questa consegna; le sezioni da Architettura in poi restano da compilare. Aggiunte le funzionalità di esperienza d'uso (pagina Oggi, griglia delle cattedre, importazione degli studenti) con le loro priorità. |
 
 ---
 
@@ -617,686 +617,193 @@ I criteri, in ordine di peso, sono: sicurezza già pronta nel framework, quanto 
 
 ---
 
-## 10. Architettura
+## Architettura
 
-ScuolaChill è un **monolite modulare**: un solo backend da rilasciare, diviso al suo interno in moduli per funzionalità, ognuno con i suoi livelli. I microservizi aggiungerebbero guasti di rete e costi senza nessun vantaggio a questa scala.
+### Diagramma dei componenti
 
-### 10.1 Diagramma dei componenti
+_Inserisci qui il diagramma. Deve mostrare i componenti principali e come comunicano._
 
-```mermaid
-flowchart LR
-    U["Browser<br/>telefono · PC laboratorio · PC docente"]
+### I livelli
 
-    subgraph AZ["Azure · Italy North"]
-        SWA["Frontend Angular<br/>Static Web Apps"]
-        subgraph VNET["Rete privata"]
-            API["Backend NestJS<br/>Container Apps · 1–3 istanze"]
-            JOB["Processi in background<br/>Container Apps Jobs"]
-            DB[("PostgreSQL<br/>Flexible Server")]
-            KV["Key Vault<br/>segreti e chiavi"]
-        end
-        BLOB[("Blob Storage<br/>materiale, privato")]
-        DEF["Controllo antivirus<br/>dei file caricati"]
-        AI["Application Insights<br/>log e allarmi"]
-        ACS["Communication Services<br/>Email"]
-    end
+| Livello                | Cosa fa in ScuolaChill | Esempio concreto |
+| ---------------------- | ---------------------- | ---------------- |
+| Presentation / API     | _…_                    | _…_              |
+| Application / Business | _…_                    | _…_              |
+| Data access            | _…_                    | _…_              |
 
-    HIBP["Pwned Passwords<br/>servizio esterno"]
+### Le dipendenze fra i livelli
 
-    U -- HTTPS --> SWA
-    U -- "HTTPS + token" --> API
-    U -. "link firmato, 5 minuti" .-> BLOB
-    API --> DB
-    API --> KV
-    API --> BLOB
-    API -- HTTPS --> HIBP
-    API --> AI
-    JOB --> DB
-    JOB -- HTTPS --> ACS
-    BLOB --> DEF
-```
-
-- Il **frontend** è un insieme di file statici distribuiti da una rete di server vicini all'utente.
-- Il **backend** è l'unico che parla con il database. Gira in una rete privata e il database non ha accesso pubblico.
-- I **processi in background** usano la stessa immagine del backend, avviata con un comando diverso. Inviano le email in coda, aggiornano i dati della dashboard ogni 5 minuti, consegnano in automatico le verifiche scadute e aggiornano lo stato dei file controllati. Li ho separati dal backend perché, quando il backend ha più istanze, questi lavori devono girare una volta sola.
-- I **file** non passano mai dalla memoria del backend. Il backend rilascia un link firmato che vale pochi minuti, e il browser carica o scarica il file direttamente dallo spazio di archiviazione.
-
-### 10.2 I livelli
-
-| Livello                      | Cosa fa in ScuolaChill                                                                                                                            | Esempio concreto                                                                                                                                                                  |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Presentation / API           | Solo HTTP: route, validazione dei DTO, guard di autenticazione e di ruolo, codici di stato, annotazioni Swagger. Non contiene regole di business. | `VotiController.salva()` valida `{ valore, commento, motivo }` e risponde 200 o 201                                                                                               |
-| Application / Business       | I casi d'uso e le regole: chi può fare cosa su quale risorsa, transazioni, coordinamento fra repository e servizi esterni                         | `AssegnaVoto` controlla che la verifica sia del docente, che la consegna esista e che, se il voto c'era già, ci sia un motivo. Poi salva voto e storico nella stessa transazione. |
-| Domain                       | Entità e regole pure, in TypeScript senza dipendenze dal framework                                                                                | `ValoreVoto` sa che 6,5 è valido e si scrive "6½", e che 11 non lo è. `Verifica` sa da quale stato può passare a quale.                                                           |
-| Data access / Infrastructure | Implementa le interfacce definite dal livello application: database, file, email, servizi esterni                                                 | `PrismaVotoRepository`, `BlobArchivioFile`, `AcsInvioEmail`, `HibpControlloPassword`                                                                                              |
-
-### 10.3 Le dipendenze fra i livelli
-
-Le dipendenze vanno in una sola direzione: **API → Application → Domain**. Il livello Infrastructure dipende da Application, perché ne implementa le interfacce, e mai il contrario.
-
-Il caso d'uso `CreaStudente` non sa che esistono Prisma o Azure. Chiede un `StudenteRepository` e una `CodaEmail`, che sono interfacce dichiarate nel suo stesso livello. In produzione il container di NestJS gli passa le implementazioni vere. Nei test gli passa delle implementazioni finte in memoria.
-
-Questo dà tre vantaggi:
-
-- **Accoppiamento basso:** se cambio il servizio email da Communication Services a Brevo, scrivo un nuovo adattatore e cambio una riga di configurazione. I casi d'uso non si toccano.
-- **Testabilità:** tutte le regole di business (scala dei voti, stati della verifica, trasferimenti, permessi) si testano in millisecondi, senza database e senza rete.
-- **Regole in un solo posto:** il controller non può saltare un controllo, perché i controlli stanno nel caso d'uso e non nel controller.
-
-Una regola di lint impedisce a un file del dominio di importare qualcosa da Infrastructure o dal framework. La direzione delle dipendenze la controlla la pipeline, non la buona volontà.
-
-### 10.4 Il frontend, l'offline e il design system
-
-- **Struttura:** Angular con componenti standalone, una cartella per ruolo (`direttore`, `docente`, `studente`) e una cartella `condiviso`. Le route di ogni ruolo vengono scaricate solo da chi ha quel ruolo, così lo studente sul telefono non scarica le pagine del direttore (NFR-19).
-- **Offline durante la verifica:** il service worker mette in cache l'applicazione. Le risposte non ancora inviate vanno in una coda in IndexedDB, nel browser, con un numero progressivo. Al ritorno della connessione la coda si svuota nell'ordine giusto. Il server tiene sempre la risposta con il numero più alto, quindi una risposta vecchia arrivata in ritardo non sovrascrive una più recente.
-- **Tempo della verifica:** il server invia l'ora di fine e la sua ora attuale. Il browser calcola la differenza con il proprio orologio e mostra il tempo rimasto corretto, anche se l'orologio del telefono è sbagliato.
-- **"Segui la verifica":** l'interfaccia del docente chiede lo stato ogni 10 secondi. Ho scartato i WebSocket: per un aggiornamento ogni 10 secondi complicherebbero l'infrastruttura (connessioni lunghe, più istanze da sincronizzare) senza un vantaggio che si veda.
-- **Design system:** Angular Material 3 con i colori di ScuolaChill definiti come token: pastello per gli sfondi, colori scuri per il testo, e un tema scuro. Il pulsante "Aa" cambia la dimensione base del testo, e siccome tutte le misure sono in `rem` si ingrandisce tutto in proporzione.
-- **Font:** Atkinson Hyperlegible per il testo, disegnato apposta per chi vede poco bene, e Fredoka per i titoli. Sono ospitati insieme all'applicazione e non caricati da Google, così l'indirizzo IP di chi apre ScuolaChill non va a terzi.
-- **Trascinamento:** nella griglia delle cattedre e nella composizione delle classi si possono trascinare studenti e docenti, ma ogni azione ha anche un'alternativa con pulsanti e tastiera. Chi non riesce a trascinare non resta bloccato.
-- **Accessibilità:** i test end-to-end verificano automaticamente le pagine principali con axe.
+_Chi può conoscere chi, e in quale direzione. Spiega come questa struttura riduce l'accoppiamento e rende il sistema testabile._
 
 ---
 
-## 11. Le API
+## Le API
 
-Tutte le route stanno sotto `/api/v1`. Uso i nomi italiani del dominio, così PRD, codice e test parlano la stessa lingua.
+### Le risorse
 
-### 11.1 Le risorse
+_Elenca le risorse REST principali. Es. `/classi`, `/verifiche`, `/voti`._
 
-| Risorsa                  | Cosa rappresenta                                                                                            |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------- |
-| `/auth`                  | Accesso, rinnovo della sessione, uscita, attivazione dell'account, recupero della password, secondo fattore |
-| `/me`                    | Il profilo dell'utente collegato e le sue risorse (`/me/voti`, `/me/oggi`)                                  |
-| `/docenti`, `/studenti`  | Gli account per ruolo, gestiti dal direttore                                                                |
-| `/classi`                | Le classi, con i sottorisorse `studenti` e `assegnazioni`                                                   |
-| `/materie`               | L'elenco delle materie della scuola                                                                         |
-| `/assegnazioni`          | Il legame docente–classe–materia                                                                            |
-| `/materiali`             | Il materiale didattico                                                                                      |
-| `/verifiche`             | Le verifiche, con le sottorisorse `tentativo` (lato studente) e `consegne` (lato docente)                   |
-| `/consegne/{id}/voto`    | Il voto di una consegna                                                                                     |
-| `/dashboard`, `/storico` | La panoramica e lo storico delle modifiche per il direttore                                                 |
+### Il contratto delle API principali
 
-### 11.2 Il contratto delle API principali
+| Verbo    | Route            | Chi può chiamarla | Payload di esempio                | Risposte previste    |
+| -------- | ---------------- | ----------------- | --------------------------------- | -------------------- |
+| `POST`   | `*/api/docenti*` | _Direttore_       | `*{ "nome": "…", "email": "…" }*` | _201, 400, 403, 409_ |
+| `GET`    | _…_              | _…_               | _…_                               | _…_                  |
+| `PUT`    | _…_              | _…_               | _…_                               | _…_                  |
+| `PATCH`  | _…_              | _…_               | _…_                               | _…_                  |
+| `DELETE` | _…_              | _…_               | _…_                               | _…_                  |
 
-| Verbo    | Route                                               | Chi può chiamarla                                   | Payload di esempio                                                                                                                 | Risposte previste                                                          | Storia           |
-| -------- | --------------------------------------------------- | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- | ---------------- |
-| `POST`   | `/auth/login`                                       | Chiunque                                            | `{ "email": "giulia.rossato@scuola.it", "password": "…" }`                                                                         | 200, 400, 401, 429                                                         | tutte            |
-| `POST`   | `/auth/refresh`                                     | Utente con cookie di sessione                       | nessuno (cookie)                                                                                                                   | 200, 401                                                                   | tutte            |
-| `GET`    | `/me/oggi`                                          | Tutti                                               | —                                                                                                                                  | 200, 401                                                                   | FR-UX-01         |
-| `POST`   | `/docenti`                                          | Direttore                                           | `{ "nome": "Elena", "cognome": "Marchetto", "email": "e.marchetto@scuola.it" }`                                                    | 201, 400, 401, 403, 409                                                    | DIR-01           |
-| `GET`    | `/docenti?page=1&pageSize=20&q=mar`                 | Direttore                                           | —                                                                                                                                  | 200, 401, 403                                                              | DIR-01, DIR-04   |
-| `POST`   | `/studenti`                                         | Direttore                                           | `{ "nome": "Giulia", "cognome": "Rossato", "email": "giulia.rossato@scuola.it", "classeId": "0192…" }`                             | 201, 400, 401, 403, 409                                                    | DIR-02           |
-| `POST`   | `/studenti/importazioni`                            | Direttore                                           | file CSV; con `?conferma=false` restituisce solo l'anteprima                                                                       | 200, 201, 400, 403, 413                                                    | DIR-02, FR-UX-04 |
-| `PUT`    | `/studenti/{id}`                                    | Direttore                                           | `{ "nome": "Giulia", "cognome": "Rossato", "email": "…" }`                                                                         | 200, 400, 403, 404, 409                                                    | DIR-02           |
-| `PATCH`  | `/studenti/{id}`                                    | Direttore                                           | `{ "attivo": false }`                                                                                                              | 200, 400, 403, 404                                                         | FR-ACC-01        |
-| `POST`   | `/utenti/{id}/attivazione`                          | Direttore                                           | `{ "canale": "email" }` oppure `{ "canale": "lettera" }`                                                                           | 202 (email), 200 PDF (lettera), 403, 404                                   | FR-INT-01        |
-| `POST`   | `/classi`                                           | Direttore                                           | `{ "nome": "1ªB", "indirizzo": "Informatica" }`                                                                                    | 201, 400, 403, 409                                                         | DIR-03           |
-| `DELETE` | `/classi/{id}`                                      | Direttore                                           | —                                                                                                                                  | 204, 403, 404, 409 (ha studenti)                                           | DIR-03           |
-| `POST`   | `/classi/{id}/studenti`                             | Direttore                                           | `{ "studentiIds": ["0192…", "0192…"] }`                                                                                            | 200, 400, 403, 404, 409                                                    | DIR-03           |
-| `POST`   | `/studenti/{id}/trasferimento`                      | Direttore                                           | `{ "classeId": "0192…" }`                                                                                                          | 200, 403, 404, 409 (verifica in corso)                                     | FR-CLA-01        |
-| `POST`   | `/classi/{id}/assegnazioni`                         | Direttore                                           | `{ "docenteId": "0192…", "materiaId": "0192…" }`                                                                                   | 201, 400, 403, 404, 409                                                    | DIR-03           |
-| `GET`    | `/dashboard`                                        | Direttore                                           | —                                                                                                                                  | 200, 401, 403                                                              | DIR-04           |
-| `POST`   | `/materiali`                                        | Docente assegnato                                   | `{ "assegnazioneId": "0192…", "titolo": "Esercizi equazioni", "tipo": "file", "nomeFile": "equazioni.pdf", "dimensione": 845120 }` | 201 con link di caricamento, 400, 403, 413, 415                            | DOC-01           |
-| `GET`    | `/classi/{id}/materie/{materiaId}/materiali?page=1` | Studente della classe, docente assegnato, direttore | —                                                                                                                                  | 200, 403, 404                                                              | STU-01           |
-| `GET`    | `/materiali/{id}/download`                          | Come sopra                                          | —                                                                                                                                  | 302 verso un link firmato di 5 minuti, 403, 404                            | STU-01           |
-| `PUT`    | `/materiali/{id}`                                   | Docente proprietario                                | `{ "titolo": "Esercizi equazioni (con soluzioni)" }`                                                                               | 200, 400, 403, 404                                                         | DOC-01           |
-| `DELETE` | `/materiali/{id}`                                   | Docente proprietario                                | —                                                                                                                                  | 204, 403, 404                                                              | DOC-01           |
-| `POST`   | `/verifiche`                                        | Docente assegnato                                   | vedi esempio sotto                                                                                                                 | 201, 400, 403                                                              | DOC-02           |
-| `PUT`    | `/verifiche/{id}`                                   | Docente proprietario                                | verifica completa, solo in Bozza o Programmata                                                                                     | 200, 400, 403, 404, 409                                                    | DOC-02           |
-| `PATCH`  | `/verifiche/{id}`                                   | Docente proprietario                                | `{ "fine": "2026-11-12T09:55:00+01:00" }` oppure `{ "stato": "ANNULLATA", "motivo": "Errore nel testo" }`                          | 200, 400, 403, 404, 409                                                    | FR-VER-01        |
-| `DELETE` | `/verifiche/{id}`                                   | Docente proprietario                                | —                                                                                                                                  | 204, 403, 404, 409 (ha consegne)                                           | FR-VER-01        |
-| `POST`   | `/verifiche/{id}/tentativo`                         | Studente della classe                               | — (inizia o riprende)                                                                                                              | 200 (ripreso), 201 (iniziato), 403, 404, 409 (già consegnata o non aperta) | STU-02           |
-| `PUT`    | `/verifiche/{id}/tentativo/risposte/{domandaId}`    | Studente, sul proprio tentativo                     | `{ "opzioneId": "0192…", "sequenza": 14 }` oppure `{ "testo": "x = 3", "sequenza": 15 }`                                           | 200, 400, 403, 409 (tempo scaduto)                                         | STU-02           |
-| `POST`   | `/verifiche/{id}/tentativo/consegna`                | Studente, sul proprio tentativo                     | —                                                                                                                                  | 200, 403, 409                                                              | STU-02           |
-| `GET`    | `/verifiche/{id}/consegne?page=1`                   | Docente proprietario                                | —                                                                                                                                  | 200, 403, 404                                                              | DOC-03, FR-UX-06 |
-| `PATCH`  | `/verifiche/{id}/consegne/{consegnaId}`             | Docente proprietario                                | `{ "fineProrogata": "2026-11-12T10:05:00+01:00" }`                                                                                 | 200, 400, 403, 404, 409                                                    | FR-VER-02        |
-| `PUT`    | `/consegne/{id}/voto`                               | Docente proprietario della verifica                 | `{ "valore": 7.5, "commento": "Ottimo il procedimento", "motivo": null }`                                                          | 201 (nuovo), 200 (corretto), 400, 403, 404, 409                            | DOC-03           |
-| `GET`    | `/me/voti`                                          | Studente                                            | —                                                                                                                                  | 200, 401, 403                                                              | STU-03           |
-| `GET`    | `/studenti/{id}/voti?page=1`                        | Direttore (tutti), docente (solo le sue verifiche)  | —                                                                                                                                  | 200, 403, 404                                                              | DIR-04           |
-| `GET`    | `/storico?entita=voto&page=1`                       | Direttore                                           | —                                                                                                                                  | 200, 403                                                                   | DIR-04, NFR-26   |
+### Errori, validazione e paginazione
 
-**Come uso i verbi.** `GET` legge e non cambia mai niente. `POST` crea una risorsa o avvia un'azione che non è una semplice modifica di campi (trasferimento, consegna). `PUT` sostituisce una risorsa intera ed è idempotente: per questo il voto e le risposte usano `PUT`, perché ripetere la stessa richiesta, ad esempio dopo un calo di rete, non crea doppioni. `PATCH` cambia solo alcuni campi o lo stato (disattivare un account, prolungare una verifica). `DELETE` elimina, ma solo dove le regole lo permettono, altrimenti risponde 409.
+**Formato uniforme degli errori.** _Mostra un esempio di risposta di errore._
 
-**Esempio: creazione di una verifica**
+**Validazione degli input.** _Dove avviene e con quali regole._
 
-```json
-POST /api/v1/verifiche
-{
-  "assegnazioneId": "0192f1c4-7b2e-7c11-9a3e-5d2b8f0c1a77",
-  "titolo": "Equazioni di primo grado",
-  "inizio": "2026-11-12T09:00:00+01:00",
-  "fine": "2026-11-12T09:50:00+01:00",
-  "domande": [
-    {
-      "tipo": "MULTIPLA",
-      "testo": "Quanto vale x in 2x + 4 = 10?",
-      "punti": 1,
-      "opzioni": [
-        { "testo": "2", "corretta": false },
-        { "testo": "3", "corretta": true },
-        { "testo": "7", "corretta": false }
-      ]
-    },
-    { "tipo": "APERTA", "testo": "Spiega i passaggi per risolvere 3(x − 1) = 9", "punti": 3 }
-  ],
-  "programma": true
-}
-```
+**Paginazione.** _Come funziona. Parametri, dimensione di default, formato della risposta._
 
-Risposta `201 Created`, con l'intestazione `Location: /api/v1/verifiche/0192f1d0-…` e la verifica nello stato `PROGRAMMATA`.
-
-**Quando una route risponde 403 e quando 404.** Se la risorsa esiste ma l'utente non ha il permesso, rispondo 403, come chiedono gli AC ("l'operazione viene negata"). Se la risorsa non esiste, rispondo 404. Gli identificatori non sono indovinabili (vedi 12.2), quindi distinguere i due casi non rivela informazioni utili.
-
-### 11.3 Errori, validazione e paginazione
-
-**Formato uniforme degli errori.** Tutti gli errori seguono lo standard Problem Details (RFC 9457). Li produce un unico filtro globale, quindi nessun controller può inventarsi un formato suo.
-
-```json
-{
-  "type": "https://scuolachill.it/errori/validazione",
-  "title": "Alcuni campi non sono validi",
-  "status": 400,
-  "detail": "Controlla i campi indicati e riprova.",
-  "errors": [
-    {
-      "campo": "email",
-      "messaggio": "Inserisci un indirizzo email valido, ad esempio nome@scuola.it"
-    },
-    { "campo": "cognome", "messaggio": "Il cognome è obbligatorio" }
-  ],
-  "traceId": "01JB3M4ZK8Q2"
-}
-```
-
-In produzione non viene mai restituito lo stack dell'errore. Il `traceId` è il codice che l'utente vede e può comunicare: con quello ritrovo la richiesta nei log (NFR-20).
-
-| Codice          | Quando lo uso                                                                                                                                            |
-| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 200 / 201 / 204 | Lettura o modifica riuscita / risorsa creata / eliminazione riuscita senza contenuto                                                                     |
-| 202             | Richiesta accettata ma eseguita dopo (email messa in coda)                                                                                               |
-| 400             | Dati non validi: campi mancanti, formato sbagliato, voto fuori scala                                                                                     |
-| 401             | Non autenticato o token scaduto                                                                                                                          |
-| 403             | Autenticato ma senza permesso su quella risorsa                                                                                                          |
-| 404             | Risorsa inesistente                                                                                                                                      |
-| 409             | Conflitto con lo stato attuale: email già usata, verifica già consegnata, trasferimento con verifica in corso, eliminazione di una verifica con consegne |
-| 413 / 415       | File troppo grande / formato non ammesso                                                                                                                 |
-| 429             | Troppe richieste, con l'intestazione `Retry-After`                                                                                                       |
-| 500 / 503       | Errore interno / servizio temporaneamente non disponibile                                                                                                |
-
-**Validazione degli input.** Avviene in due punti, con compiti diversi.
-
-1. **Nel livello API**, una pipe globale valida forma e tipo di ogni DTO: campi obbligatori, lunghezze, formato dell'email, date. È configurata per rifiutare qualsiasi campo non dichiarato. Così uno studente non può aggiungere `"ruolo": "DIRETTORE"` a una richiesta e sperare che passi.
-2. **Nel dominio e nei casi d'uso** si controllano le regole: il voto è un multiplo di 0,25 tra 1 e 10, l'orario di fine viene dopo quello di inizio, la verifica è ancora modificabile, la classe è del docente.
-
-Il database ha comunque i suoi vincoli (univocità, CHECK, chiavi esterne) come ultima difesa. L'interfaccia ripete i controlli più semplici solo per dare un riscontro immediato, mai come unica barriera.
-
-**Paginazione.** Tutte le collezioni accettano `?page=1&pageSize=20`, con 20 di base e 100 al massimo, oltre a `sort` e ai filtri della risorsa. La risposta ha sempre questa forma:
-
-```json
-{
-  "items": [],
-  "page": 1,
-  "pageSize": 20,
-  "totalItems": 590,
-  "totalPages": 30
-}
-```
-
-Uso la paginazione per pagine, e non a cursore, perché il direttore deve poter saltare a "pagina 12" e i volumi sono piccoli.
-
-**Documentazione e verifica.** Swagger è generato dal codice con il modulo Swagger di NestJS, a partire dai DTO e dalle annotazioni dei controller, quindi non può andare fuori sincrono con l'API. In sviluppo è navigabile su `/api/docs`. In produzione l'interfaccia Swagger è disattivata e la specifica viene esportata come file nella repository a ogni rilascio. La collezione Postman ha una cartella per ogni user story, con prima i casi negati e poi quelli permessi, e usa token di prova per i tre ruoli. La pipeline la esegue con Newman a ogni pull request: se un AC di negazione smette di funzionare, il rilascio si blocca.
+**Documentazione e verifica.** _Come userete OpenAPI/Swagger e la collezione Postman._
 
 ---
 
-## 12. Persistenza e modello dei dati
+## Persistenza e modello dei dati
 
-### 12.1 Diagramma ER
+### Diagramma ER
 
-```mermaid
-erDiagram
-    UTENTE ||--o{ ISCRIZIONE : "studente"
-    CLASSE ||--o{ ISCRIZIONE : "contiene"
-    UTENTE ||--o{ ASSEGNAZIONE : "docente"
-    CLASSE ||--o{ ASSEGNAZIONE : "ha"
-    MATERIA ||--o{ ASSEGNAZIONE : "insegnata in"
-    ASSEGNAZIONE ||--o{ MATERIALE : "raccoglie"
-    ASSEGNAZIONE ||--o{ VERIFICA : "raccoglie"
-    UTENTE ||--o{ MATERIALE : "proprietario"
-    UTENTE ||--o{ VERIFICA : "proprietario"
-    VERIFICA ||--|{ DOMANDA : "composta da"
-    DOMANDA ||--o{ OPZIONE : "offre"
-    VERIFICA ||--o{ CONSEGNA : "riceve"
-    UTENTE ||--o{ CONSEGNA : "svolge"
-    CONSEGNA ||--o{ RISPOSTA : "contiene"
-    DOMANDA ||--o{ RISPOSTA : "a cui risponde"
-    CONSEGNA ||--o| VOTO : "valutata con"
-    UTENTE ||--o{ EMAIL_IN_USCITA : "destinatario"
-    UTENTE ||--o{ STORICO : "autore"
+_Inserisci qui il diagramma entità-relazioni con le cardinalità._
 
-    UTENTE {
-        uuid id PK
-        string email UK
-        string nome
-        string cognome
-        string ruolo "DIRETTORE, DOCENTE, STUDENTE"
-        string password_hash
-        bool attivo
-    }
-    ISCRIZIONE {
-        uuid id PK
-        uuid studente_id FK
-        uuid classe_id FK
-        date valida_da
-        date valida_a "null se attiva"
-    }
-    ASSEGNAZIONE {
-        uuid id PK
-        uuid docente_id FK
-        uuid classe_id FK
-        uuid materia_id FK
-        date valida_da
-        date valida_a
-    }
-    VERIFICA {
-        uuid id PK
-        uuid assegnazione_id FK
-        uuid proprietario_id FK
-        string titolo
-        string stato
-        timestamp inizio
-        timestamp fine
-    }
-    CONSEGNA {
-        uuid id PK
-        uuid verifica_id FK
-        uuid studente_id FK
-        string stato "IN_CORSO, CONSEGNATA, CONSEGNATA_AUTO"
-        timestamp fine_prorogata
-        timestamp consegnata_il
-    }
-    VOTO {
-        uuid id PK
-        uuid consegna_id FK, UK
-        decimal valore "CHECK 1-10, passo 0,25"
-        string commento
-        uuid assegnato_da FK
-    }
-```
+### Identificatori
 
-Le cardinalità che contano, e i vincoli che le fanno rispettare:
+_Come vengono generati gli ID, e perché. Numeri incrementali, UUID, altro?_
 
-- **Uno studente appartiene a una sola classe alla volta.** Un indice unico parziale su `ISCRIZIONE(studente_id) WHERE valida_a IS NULL` impedisce due iscrizioni attive. Le iscrizioni chiuse restano come storico dei trasferimenti.
-- **Un docente insegna più materie in più classi.** È una relazione molti-a-molti, risolta da `ASSEGNAZIONE`. Un indice unico su `(classe_id, materia_id)` tra le assegnazioni attive garantisce un solo docente per materia in ogni classe (FR-ASS-02).
-- **Un voto lega studente, verifica e docente.** Il voto è collegato a una `CONSEGNA` (studente + verifica). La verifica porta all'assegnazione, quindi a classe, materia e docente. `assegnato_da` registra chi ha messo il voto. Così il voto conserva la classe e il docente di allora anche dopo un trasferimento.
-- **Una sola consegna per studente e verifica.** C'è un vincolo unico su `CONSEGNA(verifica_id, studente_id)`. Il tentativo in corso e la consegna sono la stessa riga, che cambia stato.
-- **Una risposta per domanda.** C'è un vincolo unico su `RISPOSTA(consegna_id, domanda_id)`. Il salvataggio aggiorna la riga se esiste già, e una colonna `sequenza` tiene la versione più recente.
-- **La proprietà è separata dall'assegnazione.** `proprietario_id` su materiale e verifica permette di passare i contenuti a un nuovo docente (FR-ASS-01) senza perdere il legame con la classe e la materia.
+### Tre modelli diversi
 
-### 12.2 Identificatori
+| Entità     | Nel database | Nel dominio | Esposta dall'API | Dove differiscono e perché |
+| ---------- | ------------ | ----------- | ---------------- | -------------------------- |
+| _es. Voto_ | _…_          | _…_         | _…_              | _…_                        |
 
-Uso **UUID versione 7**, generati dall'applicazione nel momento in cui il dominio crea l'entità.
+### Normalizzazione e letture aggregate
 
-- **Rispetto ai numeri progressivi:** un UUID non si indovina e non si conta. Nessuno capisce che ci sono 590 studenti leggendo un indirizzo, e nessuno prova `/studenti/124` dopo `/studenti/123`.
-- **Rispetto agli UUID versione 4, del tutto casuali:** i v7 sono ordinati nel tempo, quindi gli indici del database restano compatti e veloci.
-- **Generarli nell'applicazione** permette al dominio di conoscere l'identificatore prima del salvataggio. È utile per creare in una sola transazione oggetti collegati, come un account e la sua email in coda.
+_Come è normalizzato il modello. Dove serve una lettura denormalizzata, per esempio la pagina dei voti per materia o la dashboard del Direttore._
 
-Le chiavi naturali, come l'email, hanno comunque un vincolo di unicità, ma non sono mai chiavi primarie: un'email può cambiare.
+### Accesso ai dati
 
-### 12.3 Tre modelli diversi
-
-| Entità   | Nel database                                                                                 | Nel dominio                                                                                                                    | Esposta dall'API                                                                                                                             | Dove differiscono e perché                                                                                         |
-| -------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| Voto     | `valore NUMERIC(4,2)` con CHECK, `consegna_id`, `assegnato_da`, date di creazione e modifica | Oggetto `Voto` con un `ValoreVoto` che sa validarsi e scriversi come a scuola, e la regola "una correzione richiede un motivo" | `{ "materia": "Matematica", "verifica": "Equazioni di primo grado", "data": "2026-11-12", "voto": 7.5, "votoTesto": "7½", "commento": "…" }` | Lo studente legge "7½", non 7.50 e chiavi esterne. Il numero resta anche nell'API per i grafici e le medie.        |
-| Utente   | Include `password_hash`, segreto del secondo fattore, contatori dei tentativi falliti        | `Utente` con ruolo e stato; nessun dato di sicurezza                                                                           | Nome, cognome, email, ruolo, classe, stato dell'email di attivazione. Mai l'hash                                                             | I segreti non devono poter finire in una risposta nemmeno per sbaglio: il DTO di uscita non ha proprio quei campi. |
-| Domanda  | Include `corretta` sulle opzioni                                                             | `Domanda` sa calcolare il punteggio suggerito                                                                                  | Versione per il docente con le risposte corrette; versione per lo studente senza il campo                                                    | Le risposte corrette non devono mai arrivare sul dispositivo dello studente (FR-VER-04).                           |
-| Verifica | `stato` salvato come testo, orari, assegnazione                                              | Macchina a stati: `apri()`, `chiudi()`, `annulla(motivo)`, `prolunga(fine)` con le transizioni ammesse                         | Per lo studente prima dell'apertura: titolo, materia, data, durata. Le domande solo da aperta                                                | Lo stato esposto dipende dall'ora del server e da chi chiede.                                                      |
-
-La conversione tra i tre modelli la fanno dei mapper espliciti, uno per direzione. Non uso mai l'oggetto del database come risposta dell'API.
-
-### 12.4 Normalizzazione e letture aggregate
-
-Lo schema è in **terza forma normale**: ogni dato sta in un posto solo. Il nome della classe è solo in `CLASSE`, la materia di un voto si ricava da verifica e assegnazione. In questo modo un trasferimento o un cambio di docente non creano incoerenze.
-
-Per le due letture pesanti ho scelto di denormalizzare in modo controllato:
-
-- **Voti dello studente per materia (STU-03).** È una vista che unisce voto, consegna, verifica, assegnazione e materia e restituisce righe già pronte per la pagina dei voti. La media per materia la calcola il database. Con i volumi della scuola resta una query di pochi millisecondi, quindi non serve salvarla.
-- **Dashboard del direttore (DIR-04).** Studenti per classe, docenti con materie, medie per classe, materia e mese. Sono **viste materializzate**, ricalcolate ogni 5 minuti da un processo in background. Il direttore ha bisogno dell'andamento, non del dato al secondo, e così la dashboard non pesa sul database proprio nei momenti di picco. La pagina mostra l'ora dell'ultimo ricalcolo (DIR-04 AC-04).
-
-### 12.5 Accesso ai dati
-
-- **Tutte le query passano da Prisma**, che usa sempre query parametrizzate: i valori inviati dall'utente non diventano mai parte del testo SQL.
-- **Le query scritte a mano**, come le viste e alcuni aggregati, usano solo la forma sicura di Prisma con i parametri separati dal testo. Le due funzioni che accettano SQL costruito come stringa sono vietate da una regola di lint che fa fallire la build.
-- **Il backend si collega al database con un utente che può solo leggere e scrivere dati**, non modificare lo schema. Le migrazioni usano un utente diverso, solo dentro la pipeline.
-- **Le operazioni che toccano più tabelle sono in una transazione:** creazione di un account con la sua email in coda, consegna di una verifica, voto con il suo storico, trasferimento.
-- **I repository restituiscono oggetti del dominio, non oggetti Prisma.** Il resto dell'applicazione non sa che Prisma esiste.
+_Strategia di accesso ai dati e uso delle query parametrizzate contro la SQL injection._
 
 ---
 
-## 13. Sicurezza e integrazione
+## Sicurezza e integrazione
 
-Tre principi valgono ovunque:
+### Autenticazione e token
 
-- **Negato di base:** ogni route richiede l'autenticazione, a meno che non sia marcata esplicitamente come pubblica.
-- **Controllo sul server:** l'interfaccia nasconde solo i pulsanti.
-- **Difesa a strati:** se uno strato cede, un altro tiene.
+_Come si ottiene il token, cosa contiene, come viaggia il profilo utente._
 
-### 13.1 Autenticazione e token
+### Chi può fare cosa
 
-1. **Attivazione.** Il direttore crea l'account. Nessuna password viaggia per email: l'utente riceve un link di attivazione monouso valido 72 ore, e nel database si salva solo l'hash del codice.
-2. **Scelta della password.** L'utente sceglie una password di almeno 12 caratteri. Una frase è incoraggiata ed è più facile da ricordare. La password viene rifiutata se compare tra quelle rubate. Si salva con **Argon2id**, con i parametri raccomandati da OWASP.
-3. **Secondo fattore per il personale.** Direttore e docenti attivano il secondo fattore come descritto in FR-ACC-03.
-4. **Accesso.** Il login restituisce un **access token** JWT di breve durata (10 minuti), firmato con una chiave asimmetrica custodita in Key Vault, insieme a un **refresh token** in un cookie `HttpOnly; Secure; SameSite=Strict` valido solo sul percorso `/api/v1/auth`.
-5. **Dove vive l'access token.** Resta solo nella memoria dell'applicazione Angular, mai in `localStorage`, dove qualunque script iniettato potrebbe leggerlo. Un interceptor HTTP lo aggiunge a ogni richiesta come `Authorization: Bearer …` e lo rinnova in automatico quando scade.
-6. **Rinnovo.** A ogni rinnovo il refresh token viene sostituito con uno nuovo. Se uno vecchio viene riusato vuol dire che è stato rubato, e tutta la sessione viene revocata.
-7. **Durata della sessione.** Per gli studenti la sessione scade dopo 20 minuti di inattività (FR-SES-01). Per il personale dura al massimo 12 ore.
+| Operazione                    | Direttore | Docente | Studente |
+| ----------------------------- | --------- | ------- | -------- |
+| Creare un docente             | ✅        | ❌      | ❌       |
+| Caricare materiale            | _…_       | _…_     | _…_      |
+| Vedere i voti di uno studente | _…_       | _…_     | _…_      |
+| _…_                           |           |         |          |
 
-Cosa contiene l'access token, e volutamente niente di più:
+_Spiega dove viene fatto rispettare questo controllo. Ricorda che il frontend non basta mai._
 
-```json
-{
-  "sub": "0192f1c4-7b2e-7c11-9a3e-5d2b8f0c1a77",
-  "ruolo": "STUDENTE",
-  "sid": "0192f1c5-0a1b-7d22-8e4f-6c3a9b1d2e88",
-  "iss": "https://api.scuolachill.it",
-  "aud": "scuolachill-web",
-  "iat": 1794470400,
-  "exp": 1794471000
-}
-```
+### L'API esterna
 
-Un JWT è firmato ma non cifrato: chiunque lo abbia lo può leggere. Per questo non contiene nome, email o classe. Il profilo dell'utente viaggia a parte, con `GET /me`, che l'applicazione chiama dopo l'accesso. Ruolo e identificativo sono nel token perché servono a ogni richiesta, ma i permessi sulle singole risorse si controllano sempre sul database.
+_Quale servizio usate, per cosa, e cosa succede quando non risponde._
 
-Frontend e backend stanno sullo stesso dominio registrato (`app.scuolachill.it` e `api.scuolachill.it`), così il cookie `SameSite=Strict` funziona. Il CORS accetta una sola origine, quella dell'applicazione.
+### Configurazione e segreti
 
-### 13.2 Chi può fare cosa
-
-| Operazione                                               | Direttore | Docente                                            | Studente                           |
-| -------------------------------------------------------- | --------- | -------------------------------------------------- | ---------------------------------- |
-| Creare, modificare, disattivare docenti e studenti       | ✅        | ❌                                                 | ❌                                 |
-| Creare classi e materie, iscrivere e trasferire studenti | ✅        | ❌                                                 | ❌                                 |
-| Assegnare i docenti alle classi                          | ✅        | ❌                                                 | ❌                                 |
-| Vedere dashboard e storico                               | ✅        | ❌                                                 | ❌                                 |
-| Caricare materiale                                       | ❌        | ✅ solo nelle proprie classi e materie             | ❌                                 |
-| Modificare o eliminare materiale                         | ❌        | ✅ solo il proprio                                 | ❌                                 |
-| Leggere materiale                                        | ✅ tutto  | ✅ delle proprie classi                            | ✅ della propria classe            |
-| Creare e modificare verifiche                            | ❌        | ✅ solo le proprie, nelle proprie classi e materie | ❌                                 |
-| Seguire una verifica in diretta                          | ❌        | ✅ solo le proprie                                 | ❌                                 |
-| Svolgere una verifica                                    | ❌        | ❌                                                 | ✅ della propria classe, una volta |
-| Assegnare e correggere voti                              | ❌        | ✅ solo sulle proprie verifiche                    | ❌                                 |
-| Vedere i voti di uno studente                            | ✅ tutti  | ✅ solo quelli delle proprie verifiche             | ✅ solo i propri                   |
-
-Il controllo avviene **in tre punti, tutti sul server**:
-
-1. **Guard di ruolo sul controller.** Un decoratore `@Ruoli('DIRETTORE')` su ogni route. Se il ruolo non è quello giusto, la richiesta si ferma con 403 prima di arrivare al caso d'uso.
-2. **Controllo di proprietà nel caso d'uso.** "Questa verifica è tua?" e "Questo studente è nella tua classe?" si controllano dentro il livello application, dove stanno le regole. Così valgono anche se un domani la stessa operazione venisse chiamata da un'altra route.
-3. **Filtro nelle query.** Le letture dello studente filtrano sempre per l'identificativo preso dal token. Per questo esiste `/me/voti` e non `/studenti/{id}/voti` per lo studente: nell'indirizzo non c'è niente da cambiare.
-
-L'interfaccia nasconde i pulsanti che l'utente non può usare, ma solo per comodità. Ogni AC di negazione ha un test automatico che chiama l'API direttamente, senza passare dall'interfaccia (NFR-09).
-
-### 13.3 Le API esterne
-
-**Invio delle email: Azure Communication Services Email.**
-
-- **Quando lo uso:** per l'attivazione dell'account, il recupero della password e il codice di accesso via email.
-- **Come funziona:** il backend non chiama mai il servizio durante una richiesta dell'utente. Scrive l'email nella tabella `EMAIL_IN_USCITA` nella stessa transazione dell'operazione (transactional outbox). Un processo in background la invia.
-- **Quando fallisce:** il processo riprova con attese crescenti (1 minuto, 5 minuti, 30 minuti, 2 ore, 6 ore). Dopo 5 tentativi segna l'email come non consegnata e il direttore lo vede nella sua pagina "Oggi". Ogni tentativo ha un timeout di 10 secondi. Gli errori definitivi, come un indirizzo inesistente, non vengono ritentati.
-- **Doppioni:** ogni email ha un identificativo univoco che il servizio usa per riconoscere un doppio invio.
-
-**Controllo delle password rubate: Have I Been Pwned, Pwned Passwords.**
-
-- **Quando lo uso:** quando un utente sceglie o cambia la password.
-- **Come funziona:** il backend calcola l'hash SHA-1 della password e invia solo i primi 5 caratteri. Il servizio restituisce tutti gli hash che iniziano così, e il confronto avviene sul nostro server. La password, e nemmeno il suo hash completo, lasciano mai ScuolaChill.
-- **Quando fallisce:** se il servizio non risponde entro 2 secondi, il controllo viene saltato e annotato nei log. La regola dei 12 caratteri resta comunque, e l'utente non resta mai bloccato per colpa di un servizio esterno.
-
-Entrambi i servizi sono dietro un'interfaccia (`InvioEmail`, `ControlloPassword`). In sviluppo e nei test vengono sostituiti da implementazioni finte.
-
-### 13.4 Configurazione e segreti
-
-- **In produzione** il backend ha un'**identità gestita**: è Azure a garantire per lui quando legge Key Vault, si collega al database e accede allo spazio di archiviazione. Non c'è una password del database da custodire o da far trapelare. I pochi segreti rimasti, come la chiave di firma dei token, stanno in Key Vault e vengono letti all'avvio.
-- **In sviluppo** i valori stanno in un file `.env` escluso da git. Nella repository c'è solo `.env.example` con i nomi delle variabili e valori finti.
-- **La configurazione** viene validata all'avvio con uno schema: se manca una variabile obbligatoria, il backend non parte invece di partire a metà.
-- **La protezione della repository** è affidata al controllo dei segreti di GitHub, con il blocco del push attivo. Un segreto committato per sbaglio viene fermato prima di arrivare su GitHub.
-- **Nel frontend** non c'è nessun segreto: tutto quello che arriva nel browser è pubblico per definizione. Il frontend conosce solo l'indirizzo dell'API.
-
-### 13.5 Le minacce principali
-
-L'attaccante più probabile non è un gruppo di hacker, ma uno studente curioso con gli strumenti per sviluppatori del browser e la password di un compagno.
-
-| ID   | Minaccia                                                                   | Difesa                                                                                                                                                      | Come provo che funziona                             |
-| ---- | -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
-| A-01 | Uno studente chiama la route dei voti per cambiarsi il voto                | Guard di ruolo, controllo di proprietà, storico di ogni modifica                                                                                            | Test: token studente sulle route dei voti → 403     |
-| A-02 | Uno studente cambia l'ID nell'indirizzo per vedere voti o materiale altrui | Route `/me`, filtro per classe in ogni query, UUID non indovinabili                                                                                         | Test di STU-01 AC-02 e STU-03 AC-02                 |
-| A-03 | Aggiungere `"ruolo": "DIRETTORE"` a una richiesta                          | DTO che rifiutano i campi non dichiarati                                                                                                                    | Test sulla pipe di validazione                      |
-| A-04 | Leggere le risposte corrette dal browser                                   | Il DTO dello studente non ha il campo; domande inviate solo da verifica aperta                                                                              | Test che controlla il contenuto della risposta      |
-| A-05 | Indovinare password o riusare password rubate                              | Limite di tentativi, blocco progressivo, controllo delle password rubate, secondo fattore per il personale, Argon2id                                        | Test di blocco dopo 5 tentativi                     |
-| A-06 | SQL injection dai campi di ricerca                                         | Query parametrizzate, lint sulle funzioni pericolose, utente del database senza permessi sullo schema                                                       | Lint nella pipeline, scansione con OWASP ZAP        |
-| A-07 | Script inserito nel testo di una domanda per rubare sessioni (XSS)         | Angular protegge l'output di base; lint che vieta di aggirarlo; Content Security Policy stretta; token non in `localStorage`                                | Test con payload XSS noti                           |
-| A-08 | Caricare un virus mascherato da PDF o un documento con macro               | Controllo del formato reale, limite di 25 MB, formati con macro vietati, nomi dei file casuali, antivirus prima della pubblicazione, download come allegato | Caricamento del file di prova EICAR → rifiutato     |
-| A-09 | Furto di token o richieste falsificate da un altro sito                    | Token di 10 minuti, cookie `HttpOnly` e `SameSite=Strict`, rotazione con rilevamento del riuso                                                              | Test di riuso del refresh token → sessione revocata |
-| A-10 | Account lasciato aperto su un PC del laboratorio                           | Disconnessione dopo 20 minuti, "Esci" sempre visibile, niente "ricordami" per gli studenti                                                                  | Test automatico e prova in laboratorio              |
-| A-11 | Pacchetto npm malevolo o segreto finito su GitHub                          | `npm ci` con lockfile, Dependabot, `npm audit` nella pipeline, controllo dei segreti, container non root                                                    | La pipeline fallisce con vulnerabilità gravi        |
-| A-12 | Cancellazione accidentale o ransomware                                     | Ripristino del database a un momento qualsiasi degli ultimi 35 giorni, versioni e cestino sui file, storico delle modifiche                                 | Prova di ripristino mensile                         |
-
-**Intestazioni di sicurezza.** HTTPS con TLS 1.2 o superiore e HSTS. Content Security Policy con script solo dall'applicazione stessa e `frame-ancestors 'none'` contro il clickjacking. `X-Content-Type-Options: nosniff` e `Referrer-Policy: strict-origin-when-cross-origin`.
-
-**Registri e allarmi.** I log sono strutturati e vanno in Application Insights, senza password, token o voti. Ci sono allarmi su raffiche di risposte 401 e 403, blocchi ripetuti degli account e voti modificati fuori dall'orario scolastico.
-
-### 13.6 Privacy dei dati di minori
-
-- **Dati minimi:** nome, cognome, email, classe. Niente codice fiscale, indirizzo o data di nascita, perché nessuna user story ne ha bisogno.
-- **Dati in Italia:** database e file nella region di Milano, email configurate con dati in Europa.
-- **Cifratura:** in transito con TLS e a riposo con la cifratura predefinita di Azure.
-- **Conservazione:** come da FR-ACC-01. Lo storico delle modifiche ai voti si conserva quanto il voto a cui si riferisce.
-- **Ruoli:** la scuola è titolare del trattamento. Prima di caricare dati reali serve il parere del suo responsabile della protezione dei dati (DIP-06).
+_Dove vivono connection string e segreti, e come cambiano fra Development e Production._
 
 ---
 
-## 14. Qualità architetturale
+## Qualità architetturale
 
-### 14.1 Organizzazione del codice
+### Organizzazione del codice
 
-Uso una sola repository con tre parti. È un monorepo gestito con i workspace di npm, senza strumenti in più che dovrei imparare.
+_Struttura di progetti, moduli e cartelle, con le motivazioni._
 
-```text
-scuolachill/
-├─ apps/
-│  ├─ web/                          Angular
-│  │  └─ src/app/
-│  │     ├─ core/                   autenticazione, interceptor, gestione errori, offline
-│  │     ├─ condiviso/              componenti, design system, pipe del voto
-│  │     ├─ direttore/              persone, classi, griglia cattedre, panoramica
-│  │     ├─ docente/                materiale, verifiche, correzione
-│  │     └─ studente/               oggi, materiale, verifica, voti
-│  └─ api/                          NestJS
-│     └─ src/
-│        ├─ moduli/
-│        │  ├─ account/
-│        │  ├─ classi/
-│        │  ├─ materiali/
-│        │  ├─ verifiche/
-│        │  ├─ voti/
-│        │  └─ dashboard/
-│        │     ├─ api/              controller, DTO, mapper
-│        │     ├─ application/      casi d'uso, interfacce (porte)
-│        │     ├─ domain/           entità, oggetti valore, regole
-│        │     └─ infrastructure/   repository Prisma, adattatori
-│        ├─ comune/                 guard, filtro errori, paginazione, storico, configurazione
-│        ├─ main.ts                 avvio del backend
-│        └─ worker.ts               avvio dei processi in background
-├─ packages/
-│  └─ contratti/                    tipi TypeScript dei payload, condivisi tra web e api
-├─ prisma/
-│  ├─ schema.prisma
-│  └─ migrations/
-├─ tests/
-│  ├─ postman/                      collezione e ambienti
-│  └─ carico/                       scenari k6
-├─ infra/                           Bicep: tutta l'infrastruttura Azure come codice
-├─ docs/
-│  ├─ PRD.md
-│  └─ openapi.json                  esportato a ogni rilascio
-└─ .github/workflows/               pipeline
-```
+### Dependency inversion e IoC
 
-- **Cartelle per funzionalità fuori, per livello dentro.** Tutto quello che riguarda i voti sta insieme, e dentro ogni modulo la direzione delle dipendenze si vede dai nomi delle cartelle.
-- **`packages/contratti`** evita che frontend e backend si disallineino sui payload: se cambio un campo, il compilatore me lo segnala da entrambe le parti.
-- **`worker.ts`** avvia gli stessi moduli senza il server HTTP. Il codice di backend e processi in background è uno solo, e cambia solo come parte.
+_Dove li applicate e a cosa servono in ScuolaChill._
 
-### 14.2 Dependency inversion, IoC e design pattern
+### Testabilità
 
-**Dependency inversion e IoC.** Il livello application dichiara le interfacce di cui ha bisogno (`VotoRepository`, `InvioEmail`, `ArchivioFile`, `ControlloPassword`, `Orologio`). Il container di NestJS decide quale implementazione passare, in base all'ambiente. Anche l'ora corrente è un'interfaccia (`Orologio`): nei test posso "spostare" il tempo e verificare cosa succede alla scadenza di una verifica senza aspettare 50 minuti.
+_Cosa testerete, e come separate database e API esterne per sostituirli nei test._
 
-| Pattern                 | Dove                                                                                                                | A cosa serve                                                                             |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| Repository              | Ogni modulo, nel livello infrastructure                                                                             | Nasconde Prisma dietro un'interfaccia; i casi d'uso si testano con repository in memoria |
-| Adapter / Strategy      | `InvioEmail` (Communication Services, Mailpit in sviluppo, finto nei test), `ArchivioFile` (Blob, Azurite, memoria) | Cambiare fornitore o ambiente senza toccare i casi d'uso                                 |
-| Transactional outbox    | Creazione account e reinvio delle email                                                                             | Nessuna email persa, e nessun account bloccato se il servizio email è giù                |
-| State                   | Ciclo di vita della `Verifica`                                                                                      | Le transizioni ammesse stanno in un posto solo: da Aperta non si torna a Bozza           |
-| Value object            | `ValoreVoto`, `Email`, `NomeClasse`                                                                                 | Un valore non valido non può nemmeno esistere nel dominio                                |
-| Chain of responsibility | Guard: autenticazione, poi ruolo, poi proprietà                                                                     | Ogni anello può fermare la richiesta                                                     |
-| DTO + Mapper            | Ogni controller                                                                                                     | Database, dominio e API restano tre forme separate                                       |
-| Unit of work            | Transazioni di Prisma nei casi d'uso                                                                                | Più scritture insieme: o tutte o nessuna                                                 |
+### Development e Production
 
-### 14.3 Testabilità
-
-| Livello di test  | Cosa verifica                                                                            | Come isolo le dipendenze                                            | Strumento                                      |
-| ---------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | ---------------------------------------------- |
-| Unità di dominio | Scala dei voti, stati della verifica, punteggio suggerito, calcolo di "Quanto mi serve?" | Nessuna dipendenza da isolare                                       | Jest                                           |
-| Casi d'uso       | Permessi, trasferimenti, outbox, consegna automatica, AC di negazione                    | Repository in memoria, `InvioEmail` finto, `Orologio` controllabile | Jest                                           |
-| Integrazione     | Repository, vincoli del database, viste, migrazioni                                      | PostgreSQL vero in un container usa e getta                         | Testcontainers                                 |
-| API              | Contratto, codici di stato, formato degli errori, paginazione                            | Backend avviato con database in container e servizi esterni finti   | Supertest, collezione Postman con Newman       |
-| End-to-end       | I flussi principali dei tre ruoli, compreso l'offline durante la verifica                | Ambiente completo in Docker Compose                                 | Playwright, con controlli di accessibilità axe |
-| Carico           | NFR-01, NFR-02, NFR-05                                                                   | Ambiente di prova in cloud con dati finti                           | k6                                             |
-
-Ogni AC della traccia, compresi quelli di negazione, ha almeno un test che riporta l'ID nel nome, ad esempio `DOC-03 AC-03 · voto su verifica altrui → 403`. Così dalla lista dei test si vede subito cosa è coperto. L'obiettivo è almeno l'80% di copertura sui livelli domain e application. Sui controller conta di più la collezione Postman.
-
-### 14.4 Development e Production
-
-|                    | Development                                                         | Production                                                                   |
-| ------------------ | ------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| Database           | PostgreSQL in Docker Compose, con dati finti generati da uno script | PostgreSQL Flexible Server in rete privata, senza dati finti                 |
-| File               | Azurite, l'emulatore locale dello storage                           | Blob Storage privato, con versioni e cestino                                 |
-| Email              | Mailpit, che intercetta tutte le email in locale                    | Communication Services Email                                                 |
-| Segreti            | File `.env` escluso da git                                          | Key Vault con identità gestita                                               |
-| Log                | Leggibili in console, livello debug                                 | JSON strutturato in Application Insights, livello info, senza dati personali |
-| Errori             | Con lo stack, per il debug                                          | Solo Problem Details e `traceId`                                             |
-| Swagger            | Interfaccia aperta su `/api/docs`                                   | Interfaccia disattivata, specifica esportata come file                       |
-| CORS               | `http://localhost:4200`                                             | Solo `https://app.scuolachill.it`                                            |
-| Secondo fattore    | Disattivabile per comodità                                          | Obbligatorio per il personale                                                |
-| Antivirus sui file | Simulato                                                            | Controllo reale prima della pubblicazione                                    |
+|          | Development | Production |
+| -------- | ----------- | ---------- |
+| Database | _…_         | _…_        |
+| Segreti  | _…_         | _…_        |
+| Log      | _…_         | _…_        |
+| _…_      |             |            |
 
 ---
 
-## 15. Dimensionamento e costi
+## Dimensionamento e costi
 
-Ho preparato due profili: quello di produzione per una scuola vera, e uno ridotto che sta nei crediti studente per il periodo di sviluppo e collaudo. I prezzi sono stime mensili per la region Italy North, da confermare con il calcolatore prezzi di Azure prima della validazione.
+| Componente       | Servizio | Taglia (CPU, RAM, storage) | Istanze | Costo mensile stimato |
+| ---------------- | -------- | -------------------------- | ------- | --------------------- |
+| Backend          | _…_      | _…_                        | _…_     | _…_                   |
+| Database         | _…_      | _…_                        | _…_     | _…_                   |
+| Storage dei file | _…_      | _…_                        | _…_     | _…_                   |
+| _…_              |          |                            |         |                       |
+| **Totale**       |          |                            |         | **_…_**               |
 
-| Componente             | Servizio                                       | Taglia (CPU, RAM, storage)                        | Istanze                            | Costo mensile stimato (produzione) | Costo mensile stimato (collaudo)                             |
-| ---------------------- | ---------------------------------------------- | ------------------------------------------------- | ---------------------------------- | ---------------------------------- | ------------------------------------------------------------ |
-| Frontend               | Static Web Apps                                | Piano gratuito                                    | —                                  | €0                                 | €0                                                           |
-| Backend                | Container Apps                                 | 0,5 vCPU, 1 GiB                                   | 1–3; almeno 1 in orario scolastico | €20–30                             | €0–5 (spento di notte, rientra nella quota gratuita mensile) |
-| Processi in background | Container Apps Jobs                            | 0,25 vCPU, 0,5 GiB                                | eseguiti a intervalli              | €1–3                               | €0                                                           |
-| Database               | PostgreSQL Flexible Server, Burstable B1ms     | 1 vCore, 2 GiB, 32 GiB di disco, backup 35 giorni | 1                                  | €18–25                             | €8–12 (fermo la notte e nel fine settimana)                  |
-| Storage dei file       | Blob Storage                                   | fino a 20 GB, con versioni                        | —                                  | €1–3                               | €1                                                           |
-| Antivirus dei file     | Defender for Storage, controllo al caricamento | —                                                 | —                                  | €10–12                             | €0 (disattivato; in collaudo solo PDF e immagini)            |
-| Segreti                | Key Vault                                      | —                                                 | —                                  | meno di €1                         | meno di €1                                                   |
-| Monitoraggio           | Application Insights                           | fino a 5 GB di log                                | —                                  | €0–5                               | €0                                                           |
-| Email                  | Communication Services Email                   | qualche centinaio di email al mese                | —                                  | meno di €1                         | meno di €1                                                   |
-| Dominio                | scuolachill.it                                 | —                                                 | —                                  | circa €1                           | circa €1                                                     |
-| **Totale**             |                                                |                                                   |                                    | **circa €50–80**                   | **circa €12–20**                                             |
+**Strategia di scalabilità.** _Verticale o orizzontale? Manuale o automatica?_
 
-Il profilo di collaudo, per circa sette mesi tra sviluppo e collaudo, resta intorno ai 100 euro, compatibile con i crediti studente (VIN-01).
-
-**Strategia di scalabilità.**
-
-- **Backend: orizzontale e automatica.** Il backend non tiene stato in memoria: la sessione sta nel token e i contatori dei tentativi di accesso nel database. Container Apps può quindi aggiungere istanze quando le richieste contemporanee superano circa 50 per istanza, fino a 3. In orario scolastico c'è sempre almeno un'istanza accesa, così alle 9:00 nessuno aspetta un avvio a freddo.
-- **Database: verticale e manuale.** Passare da B1ms a B2s sono pochi clic e un breve riavvio, da fare fuori dall'orario scolastico.
-- **Frontend:** non ha bisogno di scalare, perché sono file statici distribuiti dalla rete di server di Azure.
-
-**Se la stima si rivela sbagliata.**
-
-- **Utenti doppi (circa 1.300):** porto il massimo delle istanze del backend a 5 e il database a B2s. Costa circa €30 in più al mese, senza cambiare una riga di codice. Il test di carico a 300 utenti (NFR-05) mi dice già dove sta il limite di una singola istanza.
-- **Utenti dimezzati:** tengo una sola istanza, accesa solo in orario scolastico. Il database è già alla taglia più piccola sensata.
-- **Picco diverso dal previsto** (ad esempio 8 classi alle 9:00 invece di 4): l'obiettivo di 300 utenti copre già questo caso.
-- **Sotto-stima dello spazio dei file:** lo storage cresce da solo e costa pochi centesimi per GB.
+**Se la stima si rivela sbagliata.** _Cosa fate se gli utenti sono il doppio? E se sono la metà?_
 
 ---
 
-## 16. Piano di deployment
+## Piano di deployment
 
-**Infrastruttura come codice.** Tutte le risorse Azure sono descritte in file Bicep nella cartella `infra/`. Ricreare l'ambiente da zero è un comando, e ogni modifica all'infrastruttura passa da una pull request come il codice. Ho scelto Bicep invece di Terraform perché è il linguaggio nativo di Azure e non richiede di gestire un file di stato.
-
-**Dal commit al cloud, con GitHub Actions.**
-
-1. **Pull request:** lint, test di unità e di integrazione (PostgreSQL in un container usa e getta), `npm audit`, collezione Postman con Newman, controllo della dimensione del frontend (NFR-19). Se qualcosa fallisce, la pull request non si può unire.
-2. **Unione su `main`:** build del frontend e dell'immagine Docker del backend, etichettata con l'hash del commit e pubblicata nel registro di container.
-3. **Accesso ad Azure:** GitHub Actions si autentica con OpenID Connect. Non c'è nessuna password di Azure salvata su GitHub.
-4. **Approvazione:** il rilascio in produzione aspetta un'approvazione manuale e non parte dalle 7:30 alle 14:30 dei giorni di scuola (NFR-06).
-5. **Migrazioni:** `prisma migrate deploy` applica le migrazioni dello schema in sospeso, con l'utente dedicato alle migrazioni.
-6. **Nuova revisione:** Container Apps crea una nuova revisione del backend. Il traffico ci passa solo quando il controllo di salute risponde. Tornare indietro vuol dire spostare il traffico sulla revisione precedente, in pochi secondi.
-7. **Frontend:** viene pubblicato su Static Web Apps solo dopo il backend, così l'interfaccia nuova non chiama mai un'API vecchia.
-8. **Verifica finale:** la collezione Postman di base gira contro la produzione con account di prova dedicati.
-
-**Modifiche allo schema nel tempo.** Le migrazioni sono file versionati nella repository e si applicano in ordine, mai a mano sul database. Per le modifiche che rompono la compatibilità uso la tecnica **expand and contract**:
-
-1. Aggiungo la nuova colonna.
-2. Rilascio il codice che scrive in entrambe.
-3. Migro i dati vecchi.
-4. In un rilascio successivo tolgo la colonna vecchia.
-
-In questo modo la revisione precedente funziona ancora durante il passaggio, e il ritorno indietro resta possibile.
-
-**Versioni.** Le versioni seguono il semantic versioning. Ogni rilascio ha una nota con le modifiche e gli ID delle storie toccate, e l'API cambia prefisso (`/api/v2`) solo per modifiche incompatibili.
+_Come ScuolaChill arriva sul cloud scelto. Come si passa da una versione alla successiva. Come vengono gestite nel tempo le modifiche allo schema del database._
 
 ---
 
 # Terza parte · Tempi e valutazione
 
-## 17. Milestone
+## Milestone
 
-Ho stimato ogni fase come se tutto andasse bene e poi ho aggiunto circa il 25% di margine, perché lavoro da sola e in parallelo c'è lo stage. Le date vanno allineate al calendario del corso.
+| Milestone                    | Cosa è pronto    | Data prevista | Responsabile    |
+| ---------------------------- | ---------------- | ------------- | --------------- |
+| PRD validato                 | Questo documento | _…_           | _tutto il team_ |
+| _Prima versione in cloud_    | _…_              | _…_           | _…_             |
+| _Collaudo con il primo anno_ | _…_              | _…_           | _…_             |
+| _…_                          |                  |               |                 |
 
-| Milestone                      | Cosa è pronto                                                                                                                | Data prevista | Responsabile                              |
-| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- | ------------- | ----------------------------------------- |
-| PRD validato                   | Questo documento, con le interviste dei requisiti impliciti                                                                  | 30/10/2026    | Maria Laura Iacobucci                     |
-| Fondamenta                     | Repository, pipeline, infrastruttura Bicep, accesso e ruoli, gestione degli errori, primo rilascio in cloud di uno scheletro | 27/11/2026    | Maria Laura Iacobucci                     |
-| Direttore                      | DIR-01…DIR-03 con email e lettera di attivazione, griglia delle cattedre                                                     | 08/01/2027    | Maria Laura Iacobucci                     |
-| Docente: materiale e verifiche | DOC-01, DOC-02, STU-01, controllo dei file                                                                                   | 05/02/2027    | Maria Laura Iacobucci                     |
-| Verifiche e voti               | STU-02 con offline, DOC-03, STU-03, "Segui la verifica"                                                                      | 05/03/2027    | Maria Laura Iacobucci                     |
-| Panoramica e rifinitura        | DIR-04, pagina "Oggi", accessibilità, test di carico a 300 utenti                                                            | 26/03/2027    | Maria Laura Iacobucci                     |
-| Collaudo con il primo anno     | Sessione osservata con studenti, un docente e il direttore; questionario SUS                                                 | 16/04/2027    | Maria Laura Iacobucci e docente del corso |
-| Correzioni dopo il collaudo    | Problemi emersi risolti, PRD aggiornato alla versione finale                                                                 | 07/05/2027    | Maria Laura Iacobucci                     |
-| Consegna finale                | Repository, applicazione online, documentazione                                                                              | 21/05/2027    | Maria Laura Iacobucci                     |
+<aside>
+💡
 
-Se il tempo non basta, taglio nell'ordine le funzionalità Could, poi le Should della sezione 5.4. Le user story della traccia e i requisiti trasversali non si toccano.
+Stima il tempo di ogni fase come se tutto andasse bene. Poi aggiungi un margine. Non va mai tutto bene.
 
-## 18. Piano di valutazione
+</aside>
 
-| Metrica                                                                    | Obiettivo                                            | Come la misuro                                      | Quando                       |
-| -------------------------------------------------------------------------- | ---------------------------------------------------- | --------------------------------------------------- | ---------------------------- |
-| Collaudatori che completano una verifica senza aiuto                       | almeno 90%                                           | Osservazione durante il collaudo                    | Collaudo                     |
-| Collaudatori che trovano un voto e il materiale di una materia senza aiuto | almeno 90%                                           | Osservazione durante il collaudo                    | Collaudo                     |
-| Tempo del direttore per creare una classe completa                         | meno di 5 minuti                                     | Cronometro durante la prova guidata                 | Collaudo                     |
-| Punteggio SUS                                                              | almeno 75, sia per gli studenti sia per il personale | Questionario a fine collaudo                        | Collaudo                     |
-| Voti o consegne persi                                                      | 0                                                    | Confronto tra voti inseriti, voti salvati e storico | Collaudo e primo mese        |
-| Risposte perse durante un calo di rete                                     | 0                                                    | Prova con il Wi-Fi staccato a metà verifica         | Prima del collaudo e durante |
-| Tempo di apertura della verifica al picco                                  | sotto i 2 s per il 95% delle richieste               | Test di carico k6 e monitoraggio                    | Prima del collaudo           |
-| Richieste in errore durante il collaudo                                    | meno dell'1%                                         | Application Insights                                | Collaudo                     |
-| AC coperti da un test automatico                                           | 100%                                                 | Test con l'ID nel nome, collezione Postman          | A ogni rilascio              |
-| Vulnerabilità gravi aperte                                                 | 0                                                    | `npm audit`, Dependabot, scansione OWASP ZAP        | A ogni rilascio              |
-| Email di attivazione consegnate al primo tentativo                         | almeno 95%                                           | Stato delle email in uscita                         | Settembre e collaudo         |
+## Piano di valutazione
+
+Come capirete che ScuolaChill funziona e come validerete che la vostra soluzione sta avendo un impatto positivo?
+
+| Metrica                                                    | Obiettivo | Come la misurate                             | Quando       |
+| ---------------------------------------------------------- | --------- | -------------------------------------------- | ------------ |
+| _es. Collaudatori che completano una verifica senza aiuto_ | _90%_     | _Osservazione durante il collaudo_           | _Collaudo_   |
+| _es. Voti persi_                                           | _0_       | _Confronto fra voti inseriti e voti salvati_ | _Primo mese_ |
+|                                                            |           |                                              |              |
 
 ---
 
-## Acceptance Criteria di questo PRD
+## Acceptance Criteria di questa PRD
 
-- [x] Ogni parte del template ha tutte le sezioni richieste, senza saltare nessun punto.
-- [x] Ho deciso tutti i punti che la traccia e il template lasciano aperti.
-- [x] Ogni requisito non funzionale ha una soglia e una condizione.
-- [x] Ogni NFR è collegato ad almeno una user story.
-- [ ] Ho inserito i requisiti impliciti emersi dalle interviste (da completare prima della versione 1.0).
-- [x] Assunzioni, vincoli e dipendenze sono separati e scritti.
-- [x] I numeri della stima del carico sono coerenti con la scuola immaginata e con il dimensionamento.
-- [x] Ogni scelta tecnica ha almeno un'alternativa scartata e una motivazione.
-- [x] La prima parte non contiene scelte tecniche.
-- [x] Lo storico delle versioni è aggiornato.
+- [ ] Ogni parte rappresentata da questo template ha tutte le sezioni richieste senza saltare nessun punto
+- [ ] Avete deciso tutti i punti che la traccia e gli esempi lasciano aperti.
+- [ ] Ogni requisito non funzionale ha una soglia e una condizione.
+- [ ] Ogni NFR è collegato ad almeno una user story.
+- [ ] Avete inserito i requisiti impliciti emersi da interviste che avete fatto.
+- [ ] Assunzioni, vincoli e dipendenze sono separati e scritti.
+- [ ] I numeri della stima del carico sono coerenti con la scuola immaginata e con il dimensionamento.
+- [ ] Ogni scelta tecnica ha almeno un'alternativa scartata e una motivazione.
+- [ ] La prima parte non contiene scelte tecniche.
+- [ ] Lo storico delle versioni è aggiornato .
